@@ -1,0 +1,16 @@
+---
+manifest_version: "0"
+name: flowsta_signing_v1_0
+integrity:
+  network_seed: "flowsta-signing-network-v1.0"
+  properties: ~
+  zomes:
+    - name: signing_integrity
+      path: signing_integrity.wasm
+      dependencies: []
+coordinator:
+  zomes:
+    - name: signing
+      path: signing_coordinator.wasm
+      dependencies:
+        - name: signing_integrity
