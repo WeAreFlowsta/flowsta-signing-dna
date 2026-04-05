@@ -15,7 +15,48 @@ pub struct RevokeInput {
     pub reason: Option<String>,
 }
 
+/// Input for sign_and_create — accepts everything except the signature,
+/// which the conductor generates using the agent's key in the lair keystore.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct SignAndCreateInput {
+    pub file_hash: Vec<u8>,
+    pub signed_at: i64,
+    pub intent: Option<SigningIntent>,
+    pub ai_generation: Option<AiGeneration>,
+    pub content_rights: Option<ContentRights>,
+    pub integrity_report: Option<IntegrityReport>,
+    pub perceptual_hash: Option<PerceptualHash>,
+}
+
 // ── Create ──────────────────────────────────────────────────────────
+
+/// Sign a file hash and create a SignatureRecord in one step.
+/// The conductor signs the hash using the agent's key from the lair keystore.
+/// No external signature needed — the zome handles both signing and committing.
+#[hdk_extern]
+pub fn sign_and_create(input: SignAndCreateInput) -> ExternResult<ActionHash> {
+    if input.file_hash.len() != 32 {
+        return Err(wasm_error!("file_hash must be exactly 32 bytes"));
+    }
+
+    // Sign the file hash using the conductor's lair keystore (agent's own key)
+    let my_key = agent_info()?.agent_initial_pubkey;
+    let sig = sign_raw(my_key.clone(), input.file_hash.clone())?;
+
+    let record = SignatureRecord {
+        file_hash: input.file_hash,
+        signature: sig.0.to_vec(),
+        signer: my_key,
+        signed_at: input.signed_at,
+        intent: input.intent,
+        ai_generation: input.ai_generation,
+        content_rights: input.content_rights,
+        integrity_report: input.integrity_report,
+        perceptual_hash: input.perceptual_hash,
+    };
+
+    create_signature(record)
+}
 
 /// Create a new SignatureRecord and add lookup links.
 ///
