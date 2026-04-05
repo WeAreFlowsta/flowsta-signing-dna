@@ -1,0 +1,13 @@
+[workspace]
+members = [
+    "zomes/signing/integrity",
+    "zomes/signing/coordinator",
+]
+resolver = "2"
+
+[workspace.dependencies]
+# Holochain 0.6: HDK 0.6.0 + HDI 0.7.0 (matches identity DNA v1.4)
+hdi = "=0.7.0"
+hdk = "=0.6.0"
+serde = "1.0"
+holochain_serialized_bytes = "*"
