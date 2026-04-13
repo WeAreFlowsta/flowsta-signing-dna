@@ -1,0 +1,16 @@
+---
+manifest_version: "0"
+name: flowsta_signing_v1_4_happ
+description: "Flowsta Signing DNA v1.4 - Cross-conductor thumbnails, webhook support"
+roles:
+  - id: flowsta_signing_v1_4
+    name: flowsta_signing_v1_4
+    provisioning:
+      strategy: create
+      deferred: false
+    dna:
+      path: flowsta_signing_v1_4.dna
+      properties: ~
+      uid: ~
+      version: ~
+      clone_limit: 0
