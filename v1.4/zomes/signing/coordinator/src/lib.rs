@@ -229,10 +229,14 @@ pub fn get_signatures_for_agent(agent: AgentPubKey) -> ExternResult<Vec<Record>>
 /// Used by the Vault signing history page.
 #[hdk_extern]
 pub fn get_my_signatures(_: ()) -> ExternResult<Vec<Record>> {
+    // Own-agent links and records are always self-authored: read them from
+    // the local databases only. A network lookup here can hang for minutes
+    // on a cold conductor and never returns anything the chain doesn't
+    // already hold.
     let my_pub_key = agent_info()?.agent_initial_pubkey;
     let links = get_links(
         LinkQuery::try_new(my_pub_key, LinkTypes::AgentToSignature)?,
-        GetStrategy::default(),
+        GetStrategy::Local,
     )?;
 
     let mut records: Vec<Record> = Vec::new();
@@ -242,7 +246,7 @@ pub fn get_my_signatures(_: ()) -> ExternResult<Vec<Record>> {
             Err(_) => continue,
         };
 
-        if let Some(record) = get(action_hash, GetOptions::default())? {
+        if let Some(record) = get(action_hash, GetOptions::local())? {
             records.push(record);
         }
     }
@@ -256,10 +260,13 @@ pub fn get_my_signatures(_: ()) -> ExternResult<Vec<Record>> {
 /// Returns signatures with signed_at >= since_ms.
 #[hdk_extern]
 pub fn get_my_signatures_since(since_ms: i64) -> ExternResult<Vec<Record>> {
+    // Same self-authored rule as get_my_signatures; records that arrive by
+    // gossip are integrated into the local database before they are
+    // queryable either way.
     let my_pub_key = agent_info()?.agent_initial_pubkey;
     let links = get_links(
         LinkQuery::try_new(my_pub_key, LinkTypes::AgentToSignature)?,
-        GetStrategy::default(),
+        GetStrategy::Local,
     )?;
 
     let mut records: Vec<Record> = Vec::new();
@@ -269,7 +276,7 @@ pub fn get_my_signatures_since(since_ms: i64) -> ExternResult<Vec<Record>> {
             Err(_) => continue,
         };
 
-        if let Some(record) = get(action_hash.clone(), GetOptions::default())? {
+        if let Some(record) = get(action_hash.clone(), GetOptions::local())? {
             // Filter by signed_at timestamp
             if let Some(entry) = record.entry().as_option() {
                 if let Ok(sig) = SignatureRecord::try_from(entry) {
@@ -408,10 +415,12 @@ pub fn set_thumbnail(input: SetThumbnailInput) -> ExternResult<ActionHash> {
         updated_at: now_ms,
     };
 
-    // Check if a thumbnail already exists (update it)
+    // Check if a thumbnail already exists (update it). Thumbnail links on
+    // own signatures are self-authored — a LOCAL read is complete, and a
+    // network read here hung for minutes on cold conductors.
     let existing_links = get_links(
         LinkQuery::try_new(input.signature_action.clone(), LinkTypes::SignatureToThumbnail)?,
-        GetStrategy::default(),
+        GetStrategy::Local,
     )?;
 
     let thumbnail_hash = if let Some(link) = existing_links.first() {
@@ -441,9 +450,13 @@ pub fn set_thumbnail(input: SetThumbnailInput) -> ExternResult<ActionHash> {
 /// Get the thumbnail for a signature.
 #[hdk_extern]
 pub fn get_thumbnail(signature_action: ActionHash) -> ExternResult<Option<Record>> {
+    // Thumbnails are written by the signature's owner; for own records the
+    // local database is complete. For linked-agent history a remote-authored
+    // thumbnail becomes visible once gossip integrates it — additive
+    // catch-up, same as the rest of the linked view.
     let links = get_links(
         LinkQuery::try_new(signature_action, LinkTypes::SignatureToThumbnail)?,
-        GetStrategy::default(),
+        GetStrategy::Local,
     )?;
 
     if let Some(link) = links.first() {
@@ -453,7 +466,7 @@ pub fn get_thumbnail(signature_action: ActionHash) -> ExternResult<Option<Record
         // Follow update chain to get latest thumbnail
         let mut current_hash = hash;
         loop {
-            let details = get_details(current_hash.clone(), GetOptions::default())?
+            let details = get_details(current_hash.clone(), GetOptions::local())?
                 .ok_or(wasm_error!("Thumbnail not found"))?;
             match details {
                 Details::Record(record_details) => {
