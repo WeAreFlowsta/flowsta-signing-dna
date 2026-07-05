@@ -365,6 +365,34 @@ pub fn get_revocations_for_signature(signature_action: ActionHash) -> ExternResu
     Ok(records)
 }
 
+/// LOCAL variant for the signer's own view: a signature's revocation can
+/// only ever be authored by its signer, so for own records the local
+/// database is complete — no network round-trip. The network variant
+/// above stays for cross-agent verification surfaces.
+#[hdk_extern]
+pub fn get_own_revocations_for_signature(
+    signature_action: ActionHash,
+) -> ExternResult<Vec<Record>> {
+    let links = get_links(
+        LinkQuery::try_new(signature_action, LinkTypes::SignatureToRevocation)?,
+        GetStrategy::Local,
+    )?;
+
+    let mut records: Vec<Record> = Vec::new();
+    for link in links {
+        let action_hash = match ActionHash::try_from(link.target) {
+            Ok(hash) => hash,
+            Err(_) => continue,
+        };
+
+        if let Some(record) = get(action_hash, GetOptions::local())? {
+            records.push(record);
+        }
+    }
+
+    Ok(records)
+}
+
 // ── Export (for future migration) ───────────────────────────────────
 
 /// Export all signature records created by the calling agent.
