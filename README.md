@@ -60,6 +60,21 @@ Output: `workdir/flowsta_signing_v1_4_happ.happ`
 | v1.1 | ❌ EOL | Perceptual hashing support added |
 | v1.0 | ❌ EOL | Initial release: SignatureRecord, RevocationEntry, ContentRights, IntegrityReport |
 
+### Coordinator revisions (v1.4)
+
+Coordinator-only changes don't alter the DNA hash, so they roll out to live
+cells via Holochain's `UpdateCoordinators` admin call — no reinstall, no
+data migration, no network split. Integrity zomes are untouched.
+
+| Rev | Changes |
+|-----|---------|
+| 3 | Adds `get_own_revocations_for_signature` — a local-read variant for the signer's own view (a revocation can only be authored by its signer, so the local database is complete). |
+| 2 | Self-authored lookups (`get_my_signatures`, `get_my_signatures_since`, `set_thumbnail`'s existing-link check, `get_thumbnail`) read with `GetStrategy::Local` — these only ever touch data the calling agent authored, and a network lookup there could hang for minutes on a freshly started conductor. Cross-agent surfaces (hash, agent, perceptual-band, and revocation lookups for verification) keep the network strategy. |
+| 1 | As released with v1.4. |
+
+Rule of thumb encoded here: **reads of self-authored data are local; reads
+that verify other agents' claims go to the network.**
+
 See [SECURITY.md](SECURITY.md) for the currently supported versions.
 
 ## Documentation
