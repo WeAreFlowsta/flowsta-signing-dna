@@ -54,7 +54,8 @@ Output: `workdir/flowsta_signing_v1_4_happ.happ`
 
 | Version | Status | Changes |
 |---------|--------|---------|
-| v1.4 | ✅ Current | Cross-conductor thumbnails + webhook support |
+| v1.5 | 🔧 Built (Holochain 0.7.1; ships with the Vault 1.7.0 line) | The 0.7 generation of v1.4: validation on the 0.7 action model; `carried_from` on signatures, revocations and thumbnails (original author, time, action hash, signed action, witness) with `carry_signature` / `carry_revocation` / `carry_thumbnail` / `get_carried`, so the public record moves between networks without its authors. Sweettest in `v1.5/tests` (two conductors, a carried signature with its embedded proof). |
+| v1.4 | ✅ Current (Holochain 0.6.1) | Cross-conductor thumbnails + webhook support |
 | v1.3 | ⚠️ Deprecated | Thumbnails + metadata extensions |
 | v1.2 | ⚠️ Deprecated | Web dashboard signing + cross-agent queries |
 | v1.1 | ❌ EOL | Perceptual hashing support added |

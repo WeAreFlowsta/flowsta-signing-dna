@@ -1,0 +1,12 @@
+---
+manifest_version: "0"
+name: flowsta_signing_v1_5_happ
+description: "Flowsta Signing DNA v1.5 - Holochain 0.7 generation; carried records for the move from v1.4"
+roles:
+  - name: flowsta_signing_v1_5
+    provisioning:
+      strategy: create
+      deferred: false
+    dna:
+      path: flowsta_signing_v1_5.dna
+      clone_limit: 0
