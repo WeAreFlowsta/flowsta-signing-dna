@@ -445,12 +445,18 @@ pub struct CarryThumbnailInput {
 }
 
 /// The record's ActionHash on this network for an action hash on the
-/// previous one, when it was carried; `None` otherwise.
+/// previous one, when THIS agent carried it; `None` otherwise.
+///
+/// Coordinator rev 2: a LOCAL read. The index link is written by the
+/// witness, and the only question the carries ask is "did I carry this
+/// already" - a network lookup here waited the full request timeout on a
+/// conductor with no warm peers (240 s per record, Vault 1.7.0 live test,
+/// 2026-10-26), the same hang the v1.4 self-authored lookups had.
 #[hdk_extern]
 pub fn get_carried(original_action_hash: ActionHash) -> ExternResult<Option<ActionHash>> {
     let links = get_links(
         LinkQuery::try_new(carried_base(&original_action_hash), LinkTypes::CarriedIndex)?,
-        GetStrategy::default(),
+        GetStrategy::Local,
     )?;
     Ok(links
         .into_iter()
