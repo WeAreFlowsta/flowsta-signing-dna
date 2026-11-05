@@ -1,0 +1,12 @@
+---
+manifest_version: "0"
+name: flowsta_signing_v1_6_happ
+description: "Flowsta Signing DNA v1.6 - the write rules and checked carried proofs (from v1.5)"
+roles:
+  - name: flowsta_signing_v1_6
+    provisioning:
+      strategy: create
+      deferred: false
+    dna:
+      path: flowsta_signing_v1_6.dna
+      clone_limit: 0

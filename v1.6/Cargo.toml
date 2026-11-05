@@ -1,0 +1,14 @@
+[workspace]
+members = [
+    "zomes/signing/integrity",
+    "zomes/signing/coordinator",
+]
+resolver = "2"
+
+[workspace.dependencies]
+# Holochain 0.7: HDK 0.7.1 + HDI 0.8.1 (the 0.7.1 conductor line). A new
+# DNA hash, so a new network: v1.5 is the 0.7 generation of v1.4.
+hdi = "=0.8.1"
+hdk = "=0.7.1"
+serde = "1.0"
+holochain_serialized_bytes = "*"
