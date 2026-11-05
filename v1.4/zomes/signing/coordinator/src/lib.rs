@@ -383,9 +383,16 @@ pub fn get_thumbnail(signature_action: ActionHash) -> ExternResult<Option<Record
 // when its own author did so, and each record found must be what its
 // lookup says it is.
 
-/// A record, unless its own author deleted it.
+/// A record, unless its own author deleted it. The details are read here
+/// first (a node that holds a record is one of its authorities, or wrote
+/// it); only a record not held here is asked of the network, whose details
+/// read waits on every authority (tens of seconds on a 0.7 network).
 fn kept_record(hash: ActionHash, options: GetOptions) -> ExternResult<Option<Record>> {
-    match get_details(hash, options)? {
+    let details = match get_details(hash.clone(), GetOptions::local())? {
+        Some(details) => Some(details),
+        None => get_details(hash, options)?,
+    };
+    match details {
         Some(Details::Record(details)) => {
             let author = details.record.action().author().clone();
             let deleted = details.deletes.iter().any(|d| *d.action().author() == author);
