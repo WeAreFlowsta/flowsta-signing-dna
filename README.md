@@ -69,9 +69,18 @@ data migration, no network split. Integrity zomes are untouched.
 
 | Rev | Changes |
 |-----|---------|
+| 4 | Readers go by the record and link details: a record or link counts as deleted or removed when its own author did so. Each lookup checks its records (a file's signatures are of that file; an agent's history holds that agent's signatures). A signature's revocations are its signer's. A thumbnail follows its author's updates, and the signer's own thumbnail is preferred; `set_thumbnail` updates only the caller's own. |
 | 3 | Adds `get_own_revocations_for_signature` — a local-read variant for the signer's own view (a revocation can only be authored by its signer, so the local database is complete). |
 | 2 | Self-authored lookups (`get_my_signatures`, `get_my_signatures_since`, `set_thumbnail`'s existing-link check, `get_thumbnail`) read with `GetStrategy::Local` — these only ever touch data the calling agent authored, and a network lookup there could hang for minutes on a freshly started conductor. Cross-agent surfaces (hash, agent, perceptual-band, and revocation lookups for verification) keep the network strategy. |
 | 1 | As released with v1.4. |
+
+### Coordinator revisions (v1.5)
+
+| Rev | Changes |
+|-----|---------|
+| 3 | The v1.4 rev 4 readers, with a revocation counted from the signer or from the agent that wrote that copy of the signature (a carried copy's witness). `get_carried` reads only the calling agent's own index links. |
+| 2 | `get_carried` reads locally. |
+| 1 | As released with v1.5. |
 
 Rule of thumb encoded here: **reads of self-authored data are local; reads
 that verify other agents' claims go to the network.**

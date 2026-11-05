@@ -1,9 +1,10 @@
 //! Flowsta Signing DNA v1.5 on a real Holochain 0.7.1 conductor.
 //!
 //! Loads the packed bundle from `../workdir/flowsta_signing_v1_5.dna` (the
-//! bytes that ship), so a passing run says the committed artifact works on
-//! this conductor: every validation arm, a signature carried from one agent
-//! to another with its embedded proof intact, and two conductors gossiping.
+//! bytes that ship) with this repo's coordinator applied over it, as the
+//! apps apply it, so a passing run says what ships works on this conductor:
+//! every validation arm, a signature carried from one agent to another with
+//! its embedded proof intact, and two conductors gossiping.
 
 use holochain::prelude::*;
 use holochain::sweettest::*;
@@ -56,7 +57,7 @@ fn decode<T: TryFrom<SerializedBytes, Error = SerializedBytesError>>(record: &Re
 #[tokio::test(flavor = "multi_thread")]
 async fn validation_arms() {
     let mut conductor = SweetConductor::standard().await;
-    let app = conductor.setup_app("signing", [&dna().await]).await.unwrap();
+    let app = conductor.setup_app("signing", [&shipped_coordinator().await]).await.unwrap();
     let zome = app.cells()[0].zome(ZOME);
 
     // Native signature: the conductor signs with the agent's lair key.
@@ -131,7 +132,7 @@ async fn validation_arms() {
 /// signed action is refused.
 #[tokio::test(flavor = "multi_thread")]
 async fn carried_records() {
-    let dna = dna().await;
+    let dna = shipped_coordinator().await;
     let mut conductors = SweetConductorBatch::standard(2).await;
     let apps = conductors.setup_app("signing", [&dna]).await.unwrap();
     conductors.exchange_peer_info().await;
@@ -246,4 +247,31 @@ async fn carried_records() {
     let on_alice: Vec<Record> = a.call(&alice_zome, "get_signatures_for_hash", vec![9u8; 32]).await;
     assert!(on_alice.iter().any(|r| r.action_address() == &carried));
     assert!(on_alice.iter().any(|r| r.action_address() == &alice_hash));
+}
+
+// ── Coordinators applied over the bundle ─────────────────────────────
+
+/// The shipped DNA with `coordinators` added or replaced (each a built wasm
+/// in `../target`). Coordinators are not part of the DNA hash.
+async fn dna_with(coordinators: &[(&str, &str)]) -> DnaFile {
+    let mut dna = dna().await;
+    let release = Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/wasm32-unknown-unknown/release");
+    let mut zomes = Vec::new();
+    let mut wasms = Vec::new();
+    for (zome, file) in coordinators {
+        let bytes = std::fs::read(release.join(file)).unwrap_or_else(|_| panic!("{file} is built: cargo build --release --target wasm32-unknown-unknown -p signing_coordinator in v1.5, with build.sh's RUSTFLAGS"));
+        let wasm = DnaWasm::from(bytes);
+        let hash = holo_hash::WasmHash::with_data(&wasm).await;
+        let def = ZomeDef::Wasm(WasmZomeDef::new(hash, Some(vec!["signing_integrity".into()])));
+        zomes.push((ZomeName::from(*zome), def.into()));
+        wasms.push(wasm);
+    }
+    dna.update_coordinators(zomes, wasms).await.unwrap();
+    dna
+}
+
+/// The DNA with the coordinator the apps apply over the bundle's original
+/// (this repo's, built to `../target`).
+async fn shipped_coordinator() -> DnaFile {
+    dna_with(&[(ZOME, "signing_coordinator.wasm")]).await
 }

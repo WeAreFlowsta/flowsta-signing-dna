@@ -135,24 +135,12 @@ pub fn get_signatures_for_hash(file_hash: Vec<u8>) -> ExternResult<Vec<Record>> 
     }
 
     let file_hash_linkable = ExternalHash::from_raw_36(hash_to_36_bytes(&file_hash));
-    let links = get_links(
-        LinkQuery::try_new(file_hash_linkable, LinkTypes::FileHashToSignature)?,
-        GetStrategy::default(),
-    )?;
-
-    let mut records: Vec<Record> = Vec::new();
-    for link in links {
-        let action_hash = match ActionHash::try_from(link.target) {
-            Ok(hash) => hash,
-            Err(_) => continue,
-        };
-
-        if let Some(record) = get(action_hash, GetOptions::default())? {
-            records.push(record);
-        }
-    }
-
-    Ok(records)
+    let records = kept_targets(file_hash_linkable, LinkTypes::FileHashToSignature, GetStrategy::default(), GetOptions::default())?;
+    // Only signatures of this file.
+    Ok(records
+        .into_iter()
+        .filter(|r| signature_of(r).is_some_and(|s| s.file_hash == file_hash))
+        .collect())
 }
 
 /// Fuzzy lookup: find signatures with similar perceptual hashes.
@@ -166,26 +154,12 @@ pub fn get_signatures_by_perceptual_bands(bands: Vec<Vec<u8>>) -> ExternResult<V
 
     for band in bands {
         let band_linkable = ExternalHash::from_raw_36(hash_to_36_bytes_padded(&band));
-        let links = get_links(
-            LinkQuery::try_new(band_linkable, LinkTypes::PerceptualBandToSignature)?,
-            GetStrategy::default(),
-        )?;
-
-        for link in links {
-            let action_hash = match ActionHash::try_from(link.target) {
-                Ok(hash) => hash,
-                Err(_) => continue,
-            };
-
+        for record in kept_targets(band_linkable, LinkTypes::PerceptualBandToSignature, GetStrategy::default(), GetOptions::default())? {
             // Deduplicate — same signature may appear via multiple band matches
-            let hash_bytes = action_hash.get_raw_39().to_vec();
-            if !seen_hashes.insert(hash_bytes) {
+            if signature_of(&record).is_none() || !seen_hashes.insert(record.action_address().get_raw_39().to_vec()) {
                 continue;
             }
-
-            if let Some(record) = get(action_hash, GetOptions::default())? {
-                records.push(record);
-            }
+            records.push(record);
         }
     }
 
@@ -205,24 +179,7 @@ pub fn get_signatures_for_agent(agent: AgentPubKey) -> ExternResult<Vec<Record>>
     // Re-derive the AgentPubKey for this DNA's DHT location.
     // Input may have DHT location bytes from a different DNA (e.g. identity DNA).
     let local_agent = AgentPubKey::from_raw_32(agent.get_raw_32().to_vec());
-    let links = get_links(
-        LinkQuery::try_new(local_agent, LinkTypes::AgentToSignature)?,
-        GetStrategy::default(),
-    )?;
-
-    let mut records: Vec<Record> = Vec::new();
-    for link in links {
-        let action_hash = match ActionHash::try_from(link.target) {
-            Ok(hash) => hash,
-            Err(_) => continue,
-        };
-
-        if let Some(record) = get(action_hash, GetOptions::default())? {
-            records.push(record);
-        }
-    }
-
-    Ok(records)
+    signed_by(local_agent, GetStrategy::default(), GetOptions::default())
 }
 
 /// Get all signatures created by the calling agent.
@@ -234,24 +191,7 @@ pub fn get_my_signatures(_: ()) -> ExternResult<Vec<Record>> {
     // on a cold conductor and never returns anything the chain doesn't
     // already hold.
     let my_pub_key = agent_info()?.agent_initial_pubkey;
-    let links = get_links(
-        LinkQuery::try_new(my_pub_key, LinkTypes::AgentToSignature)?,
-        GetStrategy::Local,
-    )?;
-
-    let mut records: Vec<Record> = Vec::new();
-    for link in links {
-        let action_hash = match ActionHash::try_from(link.target) {
-            Ok(hash) => hash,
-            Err(_) => continue,
-        };
-
-        if let Some(record) = get(action_hash, GetOptions::local())? {
-            records.push(record);
-        }
-    }
-
-    Ok(records)
+    signed_by(my_pub_key, GetStrategy::Local, GetOptions::local())
 }
 
 /// Get signatures created by the calling agent since a given timestamp.
@@ -264,31 +204,10 @@ pub fn get_my_signatures_since(since_ms: i64) -> ExternResult<Vec<Record>> {
     // gossip are integrated into the local database before they are
     // queryable either way.
     let my_pub_key = agent_info()?.agent_initial_pubkey;
-    let links = get_links(
-        LinkQuery::try_new(my_pub_key, LinkTypes::AgentToSignature)?,
-        GetStrategy::Local,
-    )?;
-
-    let mut records: Vec<Record> = Vec::new();
-    for link in links {
-        let action_hash = match ActionHash::try_from(link.target) {
-            Ok(hash) => hash,
-            Err(_) => continue,
-        };
-
-        if let Some(record) = get(action_hash.clone(), GetOptions::local())? {
-            // Filter by signed_at timestamp
-            if let Some(entry) = record.entry().as_option() {
-                if let Ok(sig) = SignatureRecord::try_from(entry) {
-                    if sig.signed_at >= since_ms {
-                        records.push(record);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(records)
+    Ok(signed_by(my_pub_key, GetStrategy::Local, GetOptions::local())?
+        .into_iter()
+        .filter(|r| signature_of(r).is_some_and(|s| s.signed_at >= since_ms))
+        .collect())
 }
 
 // ── Revocation (Phase 2 — coordinator functions) ────────────────────
@@ -342,27 +261,10 @@ pub fn revoke_signature(input: RevokeInput) -> ExternResult<ActionHash> {
     Ok(revocation_hash)
 }
 
-/// Get all revocations for a given signature.
+/// Get all revocations for a given signature (see `revocations_by_signer`).
 #[hdk_extern]
 pub fn get_revocations_for_signature(signature_action: ActionHash) -> ExternResult<Vec<Record>> {
-    let links = get_links(
-        LinkQuery::try_new(signature_action, LinkTypes::SignatureToRevocation)?,
-        GetStrategy::default(),
-    )?;
-
-    let mut records: Vec<Record> = Vec::new();
-    for link in links {
-        let action_hash = match ActionHash::try_from(link.target) {
-            Ok(hash) => hash,
-            Err(_) => continue,
-        };
-
-        if let Some(record) = get(action_hash, GetOptions::default())? {
-            records.push(record);
-        }
-    }
-
-    Ok(records)
+    revocations_by_signer(signature_action, GetStrategy::default(), GetOptions::default())
 }
 
 /// LOCAL variant for the signer's own view: a signature's revocation can
@@ -373,24 +275,7 @@ pub fn get_revocations_for_signature(signature_action: ActionHash) -> ExternResu
 pub fn get_own_revocations_for_signature(
     signature_action: ActionHash,
 ) -> ExternResult<Vec<Record>> {
-    let links = get_links(
-        LinkQuery::try_new(signature_action, LinkTypes::SignatureToRevocation)?,
-        GetStrategy::Local,
-    )?;
-
-    let mut records: Vec<Record> = Vec::new();
-    for link in links {
-        let action_hash = match ActionHash::try_from(link.target) {
-            Ok(hash) => hash,
-            Err(_) => continue,
-        };
-
-        if let Some(record) = get(action_hash, GetOptions::local())? {
-            records.push(record);
-        }
-    }
-
-    Ok(records)
+    revocations_by_signer(signature_action, GetStrategy::Local, GetOptions::local())
 }
 
 // ── Export (for future migration) ───────────────────────────────────
@@ -400,28 +285,10 @@ pub fn get_own_revocations_for_signature(
 #[hdk_extern]
 pub fn export_all_data(_: ()) -> ExternResult<Vec<SignatureRecord>> {
     let my_pub_key = agent_info()?.agent_initial_pubkey;
-    let links = get_links(
-        LinkQuery::try_new(my_pub_key, LinkTypes::AgentToSignature)?,
-        GetStrategy::default(),
-    )?;
-
-    let mut signatures: Vec<SignatureRecord> = Vec::new();
-    for link in links {
-        let action_hash = match ActionHash::try_from(link.target) {
-            Ok(hash) => hash,
-            Err(_) => continue,
-        };
-
-        if let Some(record) = get(action_hash, GetOptions::default())? {
-            if let Some(entry) = record.entry().as_option() {
-                if let Ok(sig) = SignatureRecord::try_from(entry) {
-                    signatures.push(sig);
-                }
-            }
-        }
-    }
-
-    Ok(signatures)
+    Ok(signed_by(my_pub_key, GetStrategy::default(), GetOptions::default())?
+        .iter()
+        .filter_map(signature_of)
+        .collect())
 }
 
 // ── Thumbnails ─────────────────────────────────────────────────────
@@ -446,16 +313,16 @@ pub fn set_thumbnail(input: SetThumbnailInput) -> ExternResult<ActionHash> {
     // Check if a thumbnail already exists (update it). Thumbnail links on
     // own signatures are self-authored — a LOCAL read is complete, and a
     // network read here hung for minutes on cold conductors.
-    let existing_links = get_links(
-        LinkQuery::try_new(input.signature_action.clone(), LinkTypes::SignatureToThumbnail)?,
-        GetStrategy::Local,
-    )?;
+    // Update a thumbnail this agent wrote (readers follow its author's
+    // updates).
+    let my_pub_key = agent_info()?.agent_initial_pubkey;
+    let mine = kept_targets(input.signature_action.clone(), LinkTypes::SignatureToThumbnail, GetStrategy::Local, GetOptions::local())?
+        .into_iter()
+        .find(|r| *r.action().author() == my_pub_key);
 
-    let thumbnail_hash = if let Some(link) = existing_links.first() {
-        let existing_hash = ActionHash::try_from(link.target.clone())
-            .map_err(|_| wasm_error!("Invalid thumbnail link target"))?;
+    let thumbnail_hash = if let Some(existing) = mine {
         update_entry(
-            existing_hash,
+            existing.action_address().clone(),
             &EntryZomes::IntegritySigning(EntryTypes::SignatureThumbnail(thumbnail)),
         )?
     } else {
@@ -482,37 +349,112 @@ pub fn get_thumbnail(signature_action: ActionHash) -> ExternResult<Option<Record
     // local database is complete. For linked-agent history a remote-authored
     // thumbnail becomes visible once gossip integrates it — additive
     // catch-up, same as the rest of the linked view.
-    let links = get_links(
-        LinkQuery::try_new(signature_action, LinkTypes::SignatureToThumbnail)?,
-        GetStrategy::Local,
-    )?;
+    // The signer's own thumbnail when there is one.
+    let thumbnails = kept_targets(signature_action.clone(), LinkTypes::SignatureToThumbnail, GetStrategy::Local, GetOptions::local())?;
+    let signer = kept_record(signature_action, GetOptions::local())?
+        .as_ref()
+        .and_then(signature_of)
+        .map(|s| s.signer.get_raw_32().to_vec());
+    let by_signer = thumbnails.iter().find(|t| signer.as_deref() == Some(t.action().author().get_raw_32()));
+    let Some(first) = by_signer.or(thumbnails.first()).cloned() else {
+        return Ok(None);
+    };
 
-    if let Some(link) = links.first() {
-        let hash = ActionHash::try_from(link.target.clone())
-            .map_err(|_| wasm_error!("Invalid thumbnail link target"))?;
-
-        // Follow update chain to get latest thumbnail
-        let mut current_hash = hash;
-        loop {
-            let details = get_details(current_hash.clone(), GetOptions::local())?
-                .ok_or(wasm_error!("Thumbnail not found"))?;
-            match details {
-                Details::Record(record_details) => {
-                    if let Some(latest_update) = record_details.updates.last() {
-                        current_hash = latest_update.action_address().clone();
-                    } else {
-                        return Ok(Some(record_details.record));
-                    }
+    // Follow the update chain to the latest thumbnail, by its author's own
+    // updates.
+    let author = first.action().author().clone();
+    let mut current_hash = first.action_address().clone();
+    loop {
+        match get_details(current_hash.clone(), GetOptions::local())? {
+            Some(Details::Record(record_details)) => {
+                match record_details.updates.iter().rev().find(|u| *u.action().author() == author) {
+                    Some(update) => current_hash = update.action_address().clone(),
+                    None => return Ok(Some(record_details.record)),
                 }
-                _ => return Ok(None),
             }
+            _ => return Ok(None),
         }
     }
-
-    Ok(None)
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+// Readers go by the details: a record or link counts as deleted or removed
+// when its own author did so, and each record found must be what its
+// lookup says it is.
+
+/// A record, unless its own author deleted it.
+fn kept_record(hash: ActionHash, options: GetOptions) -> ExternResult<Option<Record>> {
+    match get_details(hash, options)? {
+        Some(Details::Record(details)) => {
+            let author = details.record.action().author().clone();
+            let deleted = details.deletes.iter().any(|d| *d.action().author() == author);
+            Ok((!deleted).then_some(details.record))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// The records `base`'s links of `link_type` point at, skipping a link its
+/// own author removed and a record its own author deleted.
+fn kept_targets(
+    base: impl Into<AnyLinkableHash>,
+    link_type: LinkTypes,
+    strategy: GetStrategy,
+    options: GetOptions,
+) -> ExternResult<Vec<Record>> {
+    let mut records = Vec::new();
+    for (create, removals) in get_links_details(LinkQuery::try_new(base, link_type)?, strategy)?.into_inner() {
+        let author = create.action().author();
+        if removals.iter().any(|r| r.action().author() == author) {
+            continue;
+        }
+        let Action::CreateLink(link) = create.action() else { continue };
+        let Ok(hash) = ActionHash::try_from(link.target_address.clone()) else { continue };
+        if let Some(record) = kept_record(hash, options.clone())? {
+            records.push(record);
+        }
+    }
+    Ok(records)
+}
+
+fn signature_of(record: &Record) -> Option<SignatureRecord> {
+    record.entry().as_option().and_then(|e| SignatureRecord::try_from(e).ok())
+}
+
+/// `agent`'s signatures: the records its signing-history links point at
+/// whose signer is `agent`.
+fn signed_by(agent: AgentPubKey, strategy: GetStrategy, options: GetOptions) -> ExternResult<Vec<Record>> {
+    let raw = agent.get_raw_32().to_vec();
+    Ok(kept_targets(agent, LinkTypes::AgentToSignature, strategy, options)?
+        .into_iter()
+        .filter(|r| signature_of(r).is_some_and(|s| s.signer.get_raw_32() == raw.as_slice()))
+        .collect())
+}
+
+/// A signature's revocations: those written by its signer, or by whoever
+/// wrote this copy of it (a carried copy's witness, whose own carry of the
+/// revocation travels with it).
+fn revocations_by_signer(signature_action: ActionHash, strategy: GetStrategy, options: GetOptions) -> ExternResult<Vec<Record>> {
+    let Some(signature) = kept_record(signature_action.clone(), options.clone())? else {
+        return Ok(Vec::new());
+    };
+    let Some(signer) = signature_of(&signature).map(|s| s.signer) else {
+        return Ok(Vec::new());
+    };
+    let may_revoke = [signer.get_raw_32().to_vec(), signature.action().author().get_raw_32().to_vec()];
+    Ok(kept_targets(signature_action.clone(), LinkTypes::SignatureToRevocation, strategy, options)?
+        .into_iter()
+        .filter(|r| {
+            let names_it = r
+                .entry()
+                .as_option()
+                .and_then(|e| RevocationEntry::try_from(e).ok())
+                .is_some_and(|rev| rev.signature_action == signature_action);
+            names_it && may_revoke.iter().any(|k| k.as_slice() == r.action().author().get_raw_32())
+        })
+        .collect())
+}
 
 /// Convert a 32-byte hash to a 36-byte ExternalHash representation.
 /// ExternalHash uses: 3-byte prefix + 32-byte hash + 1-byte padding.
