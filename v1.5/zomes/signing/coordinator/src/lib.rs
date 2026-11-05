@@ -492,8 +492,10 @@ pub fn set_thumbnail(input: SetThumbnailInput) -> ExternResult<ActionHash> {
         .find(|r| *r.action().author() == my_pub_key);
 
     let thumbnail_hash = if let Some(existing) = mine {
+        // An edit updates the latest version, so the edits form one chain.
+        let latest = latest_thumbnail(&existing, GetOptions::local())?.unwrap_or(existing);
         update_entry(
-            existing.action_address().clone(),
+            latest.action_address().clone(),
             &EntryZomes::IntegritySigning(EntryTypes::SignatureThumbnail(thumbnail)),
         )?
     } else {
@@ -531,14 +533,18 @@ pub fn get_thumbnail(signature_action: ActionHash) -> ExternResult<Option<Record
         return Ok(None);
     };
 
-    // Follow the update chain to the latest thumbnail, by its author's own
-    // updates.
+    latest_thumbnail(&first, GetOptions::local())
+}
+
+/// A thumbnail's latest version: from its first record, at each step its
+/// author's newest update (a record's updates come in no set order).
+fn latest_thumbnail(first: &Record, options: GetOptions) -> ExternResult<Option<Record>> {
     let author = first.action().author().clone();
     let mut current_hash = first.action_address().clone();
     loop {
-        match get_details(current_hash.clone(), GetOptions::local())? {
+        match get_details(current_hash.clone(), options.clone())? {
             Some(Details::Record(record_details)) => {
-                match record_details.updates.iter().rev().find(|u| *u.action().author() == author) {
+                match record_details.updates.iter().filter(|u| *u.action().author() == author).max_by_key(|u| u.action().timestamp()) {
                     Some(update) => current_hash = update.action_address().clone(),
                     None => return Ok(Some(record_details.record)),
                 }
