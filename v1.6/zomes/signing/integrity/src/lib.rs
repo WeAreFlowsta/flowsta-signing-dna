@@ -336,10 +336,12 @@ pub struct Original {
 
 /// A Holochain 0.6 action as far as a check reads it: an enum tagged by
 /// `type` (0.7 changed the action shape, so this DNA has no 0.6 `Action`).
+/// An Update names its entry the same way (a thumbnail's latest version).
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type")]
 enum Action06 {
     Create(Create06),
+    Update(Create06),
     #[serde(other)]
     Other,
 }
@@ -356,15 +358,15 @@ struct Create06 {
 pub fn original_of(c: &CarriedFrom) -> Result<Original, String> {
     let (author, timestamp, entry_type, entry_hash) = match c.original_dna.as_str() {
         "1.4" => match holochain_serialized_bytes::decode::<_, Action06>(&c.original_action) {
-            Ok(Action06::Create(a)) => (a.author, a.timestamp, a.entry_type, a.entry_hash),
-            Ok(Action06::Other) => return Err("the original action is not a Create".to_string()),
+            Ok(Action06::Create(a) | Action06::Update(a)) => (a.author, a.timestamp, a.entry_type, a.entry_hash),
+            Ok(Action06::Other) => return Err("the original action writes no entry".to_string()),
             Err(e) => return Err(format!("the original action does not decode: {e}")),
         },
         "1.5" => {
             let a: Action = holochain_serialized_bytes::decode(&c.original_action)
                 .map_err(|e| format!("the original action does not decode: {e}"))?;
-            if !matches!(a.data, ActionData::Create(_)) {
-                return Err("the original action is not a Create".to_string());
+            if !matches!(a.data, ActionData::Create(_) | ActionData::Update(_)) {
+                return Err("the original action writes no entry".to_string());
             }
             let Some((hash, kind)) = a.entry_data() else {
                 return Err("the original action carries no entry".to_string());

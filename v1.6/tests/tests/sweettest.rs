@@ -217,7 +217,8 @@ async fn original_v14(conductor: &SweetConductor, author: &AgentPubKey, entry_in
 }
 
 /// Records written on the shipped v1.5 by alice (a signature, its
-/// revocation, its thumbnail) carried here by bob with their originals:
+/// revocation, its thumbnail edited once, so an Update) carried here by bob
+/// with their originals:
 /// each proof checks, the signer stays alice, the revocation and thumbnail
 /// name bob's copy of the signature, the readers count the revocation, and a
 /// second carry returns the first. Gossip reaches alice's conductor.
@@ -237,7 +238,9 @@ async fn carried_from_v1_5_with_their_proofs() {
 
     let sig: ActionHash = a.call(&a15, "sign_and_create", sign_input(5)).await;
     let rev: ActionHash = a.call(&a15, "revoke_signature", RevokeInput { signature_action: sig.clone(), reason: Some("old".into()) }).await;
-    let thumb: ActionHash = a.call(&a15, "set_thumbnail", SetThumbnailInput { signature_action: sig.clone(), thumbnail: "data:image/png;base64,djE1".into() }).await;
+    let _: ActionHash = a.call(&a15, "set_thumbnail", SetThumbnailInput { signature_action: sig.clone(), thumbnail: "data:image/png;base64,djE1".into() }).await;
+    // Edited once: its latest version is an Update, and that is carried.
+    let thumb: ActionHash = a.call(&a15, "set_thumbnail", SetThumbnailInput { signature_action: sig.clone(), thumbnail: "data:image/png;base64,ZWRpdGVk".into() }).await;
     let mine: Vec<Record> = a.call(&a15, "get_my_signatures", ()).await;
     let sig_rec = mine.iter().find(|r| r.action_address() == &sig).unwrap().clone();
     let revs: Vec<Record> = a.call(&a15, "get_revocations_for_signature", sig.clone()).await;
