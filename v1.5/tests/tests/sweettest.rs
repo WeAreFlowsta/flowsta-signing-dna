@@ -249,10 +249,11 @@ async fn carried_records() {
     assert!(on_alice.iter().any(|r| r.action_address() == &alice_hash));
 }
 
-// ── Coordinators applied over the bundle ─────────────────────────────
+// ── A stranger's own coordinator ─────────────────────────────────────
 
 /// The shipped DNA with `coordinators` added or replaced (each a built wasm
-/// in `../target`). Coordinators are not part of the DNA hash.
+/// in `../target`). Coordinators are not part of the DNA hash, so every
+/// variant is the same network.
 async fn dna_with(coordinators: &[(&str, &str)]) -> DnaFile {
     let mut dna = dna().await;
     let release = Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/wasm32-unknown-unknown/release");
@@ -274,4 +275,111 @@ async fn dna_with(coordinators: &[(&str, &str)]) -> DnaFile {
 /// (this repo's, built to `../target`).
 async fn shipped_coordinator() -> DnaFile {
     dna_with(&[(ZOME, "signing_coordinator.wasm")]).await
+}
+
+// The hostile coordinator's inputs (tests/hostile).
+#[derive(serde::Serialize, Debug)]
+struct FileLinkInput {
+    file_hash: Vec<u8>,
+    signature_action: ActionHash,
+}
+
+#[derive(serde::Serialize, Debug)]
+struct AgentLinkInput {
+    agent: AgentPubKey,
+    signature_action: ActionHash,
+}
+
+#[derive(serde::Serialize, Debug)]
+struct ThumbnailUpdateInput {
+    thumbnail_action: ActionHash,
+    signature_action: ActionHash,
+}
+
+fn hashes(records: &[Record]) -> Vec<ActionHash> {
+    records.iter().map(|r| r.action_address().clone()).collect()
+}
+
+/// What a stranger (Mallory, running `tests/hostile`) can write on this
+/// network, read by Alice with this repo's coordinator and by Carol with the
+/// shipped one. Carol is fooled, so each attack lands; Alice is not:
+///   - Mallory's revocation of Alice's signature does not count, and Alice's
+///     own revocation stays when Mallory removes its link;
+///   - Alice's signature stays findable by its file and in her history when
+///     Mallory deletes it and removes its links;
+///   - links Mallory files under another file, or under Alice's history,
+///     add nothing there;
+///   - Mallory's update of Alice's thumbnail does not replace it.
+///
+/// Build first, with build.sh's RUSTFLAGS: `cargo build --release --target
+/// wasm32-unknown-unknown -p signing_coordinator` in `v1.5`, and `cargo
+/// build --release --target wasm32-unknown-unknown` in `tests/hostile` with
+/// `CARGO_TARGET_DIR=../../target`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_strangers_writes_do_not_fool_readers() {
+    let ours = shipped_coordinator().await;
+    let hostile = dna_with(&[(ZOME, "signing_coordinator.wasm"), ("hostile", "signing_hostile_test.wasm")]).await;
+    let shipped = dna().await;
+    assert_eq!(ours.dna_hash(), hostile.dna_hash(), "a coordinator does not change the network");
+    assert_eq!(ours.dna_hash(), shipped.dna_hash());
+
+    let mut conductors = SweetConductorBatch::standard(3).await;
+    let alice = conductors[0].setup_app("signing", [&ours]).await.unwrap().into_cells().remove(0);
+    let mallory = conductors[1].setup_app("signing", [&hostile]).await.unwrap().into_cells().remove(0);
+    let carol = conductors[2].setup_app("signing", [&shipped]).await.unwrap().into_cells().remove(0);
+    conductors.exchange_peer_info().await;
+    let (a, m, c) = (&conductors[0], &conductors[1], &conductors[2]);
+    let (az, mz, mh, cz) = (alice.zome(ZOME), mallory.zome(ZOME), mallory.zome("hostile"), carol.zome(ZOME));
+    let alice_key = alice.agent_pubkey().clone();
+
+    // Alice signs file 7 with a thumbnail, and signs and revokes file 6;
+    // Mallory signs file 8 of his own.
+    let sig7: ActionHash = a.call(&az, "sign_and_create", sign_input(7)).await;
+    let thumb: ActionHash = a
+        .call(&az, "set_thumbnail", SetThumbnailInput { signature_action: sig7.clone(), thumbnail: "data:image/png;base64,QUxJQ0U=".into() })
+        .await;
+    let sig6: ActionHash = a.call(&az, "sign_and_create", sign_input(6)).await;
+    let real_rev: ActionHash = a.call(&az, "revoke_signature", RevokeInput { signature_action: sig6.clone(), reason: None }).await;
+    let sig8: ActionHash = m.call(&mz, "sign_and_create", sign_input(8)).await;
+    await_consistency([&alice, &mallory, &carol]).await.expect("the signatures reach every peer");
+
+    // Mallory's writes: the network accepts each one.
+    let _: ActionHash = m.call(&mh, "forge_revocation", sig7.clone()).await;
+    let removed: u32 = m.call(&mh, "remove_revocation_links", sig6.clone()).await;
+    assert_eq!(removed, 1);
+    let _: ActionHash = m.call(&mh, "update_thumbnail", ThumbnailUpdateInput { thumbnail_action: thumb.clone(), signature_action: sig7.clone() }).await;
+    let _: ActionHash = m.call(&mh, "link_file", FileLinkInput { file_hash: vec![9; 32], signature_action: sig7.clone() }).await;
+    let _: ActionHash = m.call(&mh, "link_agent", AgentLinkInput { agent: alice_key.clone(), signature_action: sig8.clone() }).await;
+    let _: ActionHash = m.call(&mh, "delete_record", sig7.clone()).await;
+    let removed: u32 = m.call(&mh, "remove_file_links", vec![7u8; 32]).await;
+    assert_eq!(removed, 1);
+    let removed: u32 = m.call(&mh, "remove_agent_links", alice_key.clone()).await;
+    assert!(removed >= 2, "alice's history links, removed");
+    await_consistency([&alice, &mallory, &carol]).await.expect("mallory's writes reach every peer");
+
+    // Carol, on the shipped coordinator, is fooled.
+    let carol_revs: Vec<Record> = c.call(&cz, "get_revocations_for_signature", sig7.clone()).await;
+    assert_eq!(carol_revs.len(), 1, "the shipped reader counts mallory's revocation");
+    let carol_found: Vec<Record> = c.call(&cz, "get_signatures_for_hash", vec![7u8; 32]).await;
+    assert!(carol_found.is_empty(), "the shipped reader loses alice's signature");
+
+    // Alice is not.
+    let revs: Vec<Record> = a.call(&az, "get_revocations_for_signature", sig7.clone()).await;
+    assert!(revs.is_empty(), "a stranger's revocation does not count");
+    let revs: Vec<Record> = a.call(&az, "get_revocations_for_signature", sig6.clone()).await;
+    assert_eq!(hashes(&revs), vec![real_rev.clone()], "the signer's revocation stays when a stranger removes its link");
+    let own_revs: Vec<Record> = a.call(&az, "get_own_revocations_for_signature", sig6.clone()).await;
+    assert_eq!(hashes(&own_revs), vec![real_rev]);
+    let found: Vec<Record> = a.call(&az, "get_signatures_for_hash", vec![7u8; 32]).await;
+    assert_eq!(hashes(&found), vec![sig7.clone()], "a stranger's delete and link removal do not hide a signature");
+    let other_file: Vec<Record> = a.call(&az, "get_signatures_for_hash", vec![9u8; 32]).await;
+    assert!(other_file.is_empty(), "a signature filed under another file is not a signature of it");
+    let history: Vec<Record> = a.call(&az, "get_signatures_for_agent", alice_key.clone()).await;
+    let history = hashes(&history);
+    assert!(history.contains(&sig7) && history.contains(&sig6), "alice's history stays");
+    assert!(!history.contains(&sig8), "a stranger's signature filed under her history is not hers");
+    let mine: Vec<Record> = a.call(&az, "get_my_signatures", ()).await;
+    assert_eq!(hashes(&mine).len(), 2);
+    let thumbnail: Option<Record> = a.call(&az, "get_thumbnail", sig7.clone()).await;
+    assert_eq!(thumbnail.map(|r| r.action_address().clone()), Some(thumb), "a stranger's update does not replace a thumbnail");
 }
